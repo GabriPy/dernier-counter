@@ -1,0 +1,51 @@
+# Nome fisso del progetto: rende il nome del volume indipendente
+# da come si chiama la cartella sul server (evita di perdere il DB).
+name: dernier
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: dernier-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dernier
+      POSTGRES_PASSWORD: dernierpass
+      POSTGRES_DB: dernier
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./backend/src/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dernier -d dernier"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    container_name: dernier-backend
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: dernier
+      DB_PASSWORD: dernierpass
+      DB_NAME: dernier
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: dernier-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    # Unica porta pubblicata: Nginx ascolta sulla 8080 (dentro e fuori dal container),
+    # la 80 non viene usata. In ascolto solo sulla loopback, così è raggiungibile
+    # da cloudflared (che gira sull'host) ma non dalla rete.
+    ports:
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  db_data:
