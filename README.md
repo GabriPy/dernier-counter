@@ -29,7 +29,19 @@ statistiche e classifica.
   │   ♠   ││   ♥   ││   ♦   ││   ♣   │
   │      A││      K││      Q││      J│
   └───────┘└───────┘└───────┘└───────┘
-    paga     paga      paga     vince
+```
+
+Per ogni mano si inserisce il punteggio di ciascuno: esattamente un `0`, che indica
+chi ha vinto la mano.
+
+```text
+   mano #3
+   ┌────────┬───────┐
+   │ Marco  │     0 │  ← vince la mano
+   │ Luca   │     8 │
+   │ Sara   │    12 │
+   │ Elena  │     5 │
+   └────────┴───────┘
 ```
 
 <img src="./assets/divider.svg" alt="" width="100%">
