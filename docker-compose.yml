@@ -45,7 +45,7 @@ services:
     # la 80 non viene usata. In ascolto solo sulla loopback, così è raggiungibile
     # da cloudflared (che gira sull'host) ma non dalla rete.
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8020:8080"
 
 volumes:
   db_data:
