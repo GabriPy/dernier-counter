@@ -66,6 +66,27 @@
             <span class="stat-label">mani vinte dal vincitore</span>
           </div>
         </v-card-text>
+
+        <v-card-actions v-if="!isFinished" class="px-4 pb-4">
+          <v-btn
+            v-if="hasHands"
+            color="error"
+            variant="tonal"
+            prepend-icon="mdi-flag-checkered"
+            @click="confirmFinish = true"
+          >
+            Termina partita
+          </v-btn>
+          <v-btn
+            v-else
+            color="error"
+            variant="tonal"
+            prepend-icon="mdi-delete-outline"
+            @click="confirmDelete = true"
+          >
+            Elimina partita
+          </v-btn>
+        </v-card-actions>
       </v-card>
 
       <v-card class="player-card mb-6">
@@ -126,23 +147,102 @@
           </p>
         </v-card-text>
       </v-card>
+
+      <v-dialog v-model="confirmFinish" max-width="440">
+        <v-card>
+          <v-card-title class="text-h6">Terminare la partita?</v-card-title>
+          <v-card-text>
+            Vince chi ha pagato meno punti; a parità, chi ha vinto più mani.
+            L'operazione non si può annullare.
+          </v-card-text>
+          <v-card-actions>
+            <v-spacer />
+            <v-btn variant="text" @click="confirmFinish = false">Annulla</v-btn>
+            <v-btn color="error" variant="tonal" :loading="working" @click="terminate">
+              Termina
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-dialog>
+
+      <v-dialog v-model="confirmDelete" max-width="440">
+        <v-card>
+          <v-card-title class="text-h6">Eliminare la partita?</v-card-title>
+          <v-card-text>
+            La partita non ha mani registrate e verrà rimossa definitivamente.
+          </v-card-text>
+          <v-card-actions>
+            <v-spacer />
+            <v-btn variant="text" @click="confirmDelete = false">Annulla</v-btn>
+            <v-btn color="error" variant="tonal" :loading="working" @click="remove">
+              Elimina
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-dialog>
     </template>
   </v-container>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import { api } from '../api/client';
 import type { GameDetail, Hand } from '../types';
 import { formatDateTime } from '../utils/format';
 
 const props = defineProps<{ id: string }>();
+const router = useRouter();
 
 const game = ref<GameDetail | null>(null);
 const loading = ref(true);
 const error = ref('');
+const confirmFinish = ref(false);
+const confirmDelete = ref(false);
+const working = ref(false);
 
 const isFinished = computed(() => game.value?.status === 'finished');
+const hasHands = computed(() => (game.value?.total_hands ?? 0) > 0);
+
+/** Chiude la partita e ricarica il dettaglio con il vincitore eletto. */
+async function terminate(): Promise<void> {
+  if (!game.value) {
+    return;
+  }
+  const id = game.value.id;
+
+  working.value = true;
+  error.value = '';
+  try {
+    await api.games.finish(id);
+    game.value = await api.games.get(id);
+    confirmFinish.value = false;
+  } catch (err) {
+    error.value = (err as Error).message;
+  } finally {
+    working.value = false;
+  }
+}
+
+/** Elimina una partita senza mani registrate e torna alla home. */
+async function remove(): Promise<void> {
+  if (!game.value) {
+    return;
+  }
+  const id = game.value.id;
+
+  working.value = true;
+  error.value = '';
+  try {
+    await api.games.remove(id);
+    confirmDelete.value = false;
+    await router.push({ name: 'home' });
+  } catch (err) {
+    error.value = (err as Error).message;
+  } finally {
+    working.value = false;
+  }
+}
 
 function handPoints(hand: Hand, playerId: number): number {
   return hand.scores.find((score) => score.player_id === playerId)?.points ?? 0;

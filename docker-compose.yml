@@ -41,9 +41,9 @@ services:
     restart: unless-stopped
     depends_on:
       - backend
-    # Unica porta pubblicata: Nginx ascolta sulla 8080 (dentro e fuori dal container),
-    # la 80 non viene usata. In ascolto solo sulla loopback, così è raggiungibile
-    # da cloudflared (che gira sull'host) ma non dalla rete.
+    # Unica porta pubblicata: Nginx ascolta sulla 8080 dentro il container,
+    # mappata sulla 8020 dell'host (la 80 non viene usata). In ascolto solo sulla
+    # loopback, così è raggiungibile da cloudflared (che gira sull'host) ma non dalla rete.
     ports:
       - "127.0.0.1:8020:8080"
 

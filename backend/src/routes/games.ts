@@ -150,84 +150,174 @@ gamesRouter.post(
   })
 );
 
+/** Minuti di inattività oltre i quali una partita in corso viene chiusa d'ufficio. */
+const STALE_MINUTES = Number(process.env.STALE_GAME_MINUTES ?? 30);
+
+/** Ogni quanto lo sweeper controlla le partite inattive. */
+const SWEEP_INTERVAL_MS = 60_000;
+
 /**
- * PATCH /api/games/:id/finish
  * Chiude la partita calcolando vincitore, punti totali e numero di mani.
  * Vince chi ha pagato meno punti; a parità, chi ha vinto più mani.
+ * Condivisa dalla chiusura manuale e da quella automatica.
  */
+async function finishGame(id: number) {
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    const gameRes = await client.query('SELECT id, status FROM games WHERE id = $1 FOR UPDATE', [id]);
+    if (gameRes.rowCount === 0) {
+      throw new HttpError(404, 'Partita non trovata');
+    }
+    if (gameRes.rows[0].status !== 'in_progress') {
+      throw new HttpError(409, 'La partita è già stata chiusa');
+    }
+
+    const totalsRes = await client.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM hands WHERE game_id = $1) AS total_hands,
+         COALESCE((
+           SELECT SUM(hs.points)::int
+             FROM hand_scores hs
+             JOIN hands h ON h.id = hs.hand_id
+            WHERE h.game_id = $1
+         ), 0) AS total_points`,
+      [id]
+    );
+    const { total_hands: totalHands, total_points: totalPoints } = totalsRes.rows[0];
+
+    if (totalHands === 0) {
+      throw new HttpError(400, 'Non puoi chiudere una partita senza aver giocato almeno una mano');
+    }
+
+    const winnerRes = await client.query(
+      `SELECT gp.player_id,
+              COALESCE(SUM(hs.points), 0)::int AS points_paid,
+              COUNT(DISTINCT CASE WHEN h2.winner_id = gp.player_id THEN h2.id END)::int AS hands_won
+         FROM game_players gp
+         LEFT JOIN hands h2 ON h2.game_id = gp.game_id
+         LEFT JOIN hand_scores hs ON hs.hand_id = h2.id AND hs.player_id = gp.player_id
+        WHERE gp.game_id = $1
+        GROUP BY gp.player_id
+        ORDER BY points_paid ASC, hands_won DESC, gp.player_id ASC
+        LIMIT 1`,
+      [id]
+    );
+
+    if (winnerRes.rowCount === 0) {
+      throw new HttpError(400, 'La partita non ha giocatori associati');
+    }
+    const winnerId: number = winnerRes.rows[0].player_id;
+
+    await client.query(
+      `UPDATE games
+          SET status = 'finished',
+              ended_at = NOW(),
+              winner_id = $2,
+              total_points = $3,
+              total_hands = $4
+        WHERE id = $1`,
+      [id, winnerId, totalPoints, totalHands]
+    );
+
+    await client.query('COMMIT');
+
+    const { rows } = await pool.query(`${GAME_SELECT} WHERE g.id = $1`, [id]);
+    return rows[0];
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/** PATCH /api/games/:id/finish — chiusura manuale */
 gamesRouter.patch(
   '/:id/finish',
   asyncHandler(async (req, res) => {
     const id = parseId(req.params.id, 'ID partita');
-    const client = await pool.connect();
+    res.json(await finishGame(id));
+  })
+);
 
+/**
+ * Chiude d'ufficio le partite in corso ferme da oltre STALE_MINUTES minuti.
+ * Salta quelle senza mani: non ci sarebbe un vincitore da eleggere.
+ */
+export async function closeStaleGames(): Promise<number[]> {
+  const { rows } = await pool.query(
+    `SELECT g.id
+       FROM games g
+      WHERE g.status = 'in_progress'
+        AND g.last_activity_at < NOW() - ($1::int * INTERVAL '1 minute')
+        AND EXISTS (SELECT 1 FROM hands h WHERE h.game_id = g.id)
+      ORDER BY g.last_activity_at ASC`,
+    [STALE_MINUTES]
+  );
+
+  const closed: number[] = [];
+  for (const row of rows as { id: number }[]) {
     try {
-      await client.query('BEGIN');
+      await finishGame(row.id);
+      closed.push(row.id);
+    } catch (err) {
+      // può essere stata chiusa nel frattempo da qualcun altro: la saltiamo
+      console.warn(
+        `Chiusura automatica della partita ${row.id} saltata:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+  return closed;
+}
 
-      const gameRes = await client.query('SELECT id, status FROM games WHERE id = $1 FOR UPDATE', [id]);
-      if (gameRes.rowCount === 0) {
+/** Avvia il controllo periodico delle partite inattive. */
+export function startStaleGameSweeper(): void {
+  const tick = (): void => {
+    closeStaleGames()
+      .then((closed) => {
+        if (closed.length > 0) {
+          console.log(
+            `Chiusura automatica: partite ${closed.join(', ')} (ferme da oltre ${STALE_MINUTES} minuti)`
+          );
+        }
+      })
+      .catch((err) => console.error('Errore nella chiusura automatica delle partite', err));
+  };
+
+  tick();
+  setInterval(tick, SWEEP_INTERVAL_MS);
+}
+
+/**
+ * DELETE /api/games/:id
+ * Elimina una partita mai giocata — tipicamente aperta per sbaglio.
+ * Una partita con mani registrate non si elimina: va chiusa, per non perdere
+ * punti e vittorie già conteggiati nelle statistiche dei giocatori.
+ */
+gamesRouter.delete(
+  '/:id',
+  asyncHandler(async (req, res) => {
+    const id = parseId(req.params.id, 'ID partita');
+
+    const deleted = await pool.query(
+      `DELETE FROM games g
+        WHERE g.id = $1
+          AND NOT EXISTS (SELECT 1 FROM hands h WHERE h.game_id = g.id)`,
+      [id]
+    );
+
+    if (deleted.rowCount === 0) {
+      const existing = await pool.query('SELECT 1 FROM games WHERE id = $1', [id]);
+      if (existing.rowCount === 0) {
         throw new HttpError(404, 'Partita non trovata');
       }
-      if (gameRes.rows[0].status !== 'in_progress') {
-        throw new HttpError(409, 'La partita è già stata chiusa');
-      }
-
-      const totalsRes = await client.query(
-        `SELECT
-           (SELECT COUNT(*)::int FROM hands WHERE game_id = $1) AS total_hands,
-           COALESCE((
-             SELECT SUM(hs.points)::int
-               FROM hand_scores hs
-               JOIN hands h ON h.id = hs.hand_id
-              WHERE h.game_id = $1
-           ), 0) AS total_points`,
-        [id]
-      );
-      const { total_hands: totalHands, total_points: totalPoints } = totalsRes.rows[0];
-
-      if (totalHands === 0) {
-        throw new HttpError(400, 'Non puoi chiudere una partita senza aver giocato almeno una mano');
-      }
-
-      const winnerRes = await client.query(
-        `SELECT gp.player_id,
-                COALESCE(SUM(hs.points), 0)::int AS points_paid,
-                COUNT(DISTINCT CASE WHEN h2.winner_id = gp.player_id THEN h2.id END)::int AS hands_won
-           FROM game_players gp
-           LEFT JOIN hands h2 ON h2.game_id = gp.game_id
-           LEFT JOIN hand_scores hs ON hs.hand_id = h2.id AND hs.player_id = gp.player_id
-          WHERE gp.game_id = $1
-          GROUP BY gp.player_id
-          ORDER BY points_paid ASC, hands_won DESC, gp.player_id ASC
-          LIMIT 1`,
-        [id]
-      );
-
-      if (winnerRes.rowCount === 0) {
-        throw new HttpError(400, 'La partita non ha giocatori associati');
-      }
-      const winnerId: number = winnerRes.rows[0].player_id;
-
-      await client.query(
-        `UPDATE games
-            SET status = 'finished',
-                ended_at = NOW(),
-                winner_id = $2,
-                total_points = $3,
-                total_hands = $4
-          WHERE id = $1`,
-        [id, winnerId, totalPoints, totalHands]
-      );
-
-      await client.query('COMMIT');
-
-      const { rows } = await pool.query(`${GAME_SELECT} WHERE g.id = $1`, [id]);
-      res.json(rows[0]);
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
+      throw new HttpError(409, 'La partita ha mani registrate: chiudila invece di eliminarla');
     }
+
+    res.status(204).send();
   })
 );

@@ -9,14 +9,16 @@ CREATE TABLE IF NOT EXISTS players (
 );
 
 CREATE TABLE IF NOT EXISTS games (
-  id           SERIAL PRIMARY KEY,
-  started_at   TIMESTAMP NOT NULL DEFAULT NOW(),
-  ended_at     TIMESTAMP NULL,
-  status       VARCHAR(20) NOT NULL DEFAULT 'in_progress'
-               CHECK (status IN ('in_progress', 'finished')),
-  winner_id    INT REFERENCES players(id),
-  total_points INT NOT NULL DEFAULT 0,
-  total_hands  INT NOT NULL DEFAULT 0
+  id               SERIAL PRIMARY KEY,
+  started_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+  ended_at         TIMESTAMP NULL,
+  status           VARCHAR(20) NOT NULL DEFAULT 'in_progress'
+                   CHECK (status IN ('in_progress', 'finished')),
+  winner_id        INT REFERENCES players(id),
+  total_points     INT NOT NULL DEFAULT 0,
+  total_hands      INT NOT NULL DEFAULT 0,
+  -- aggiornata a ogni mano: serve a chiudere le partite inattive
+  last_activity_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS game_players (
@@ -50,3 +52,4 @@ CREATE INDEX IF NOT EXISTS idx_hands_winner        ON hands (winner_id);
 CREATE INDEX IF NOT EXISTS idx_hand_scores_hand    ON hand_scores (hand_id);
 CREATE INDEX IF NOT EXISTS idx_hand_scores_player  ON hand_scores (player_id);
 CREATE INDEX IF NOT EXISTS idx_games_started_at    ON games (started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_games_stale         ON games (last_activity_at) WHERE status = 'in_progress';

@@ -83,6 +83,9 @@ handsRouter.post(
       );
       const handId: number = handRes.rows[0].id;
 
+      // tiene traccia dell'ultima mano: da qui decorre la chiusura automatica
+      await client.query('UPDATE games SET last_activity_at = NOW() WHERE id = $1', [gameId]);
+
       for (const score of scores) {
         await client.query(
           'INSERT INTO hand_scores (hand_id, player_id, points) VALUES ($1, $2, $3)',

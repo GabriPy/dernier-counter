@@ -3,7 +3,7 @@ import cors from 'cors';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import { pool } from './db/pool';
-import { gamesRouter } from './routes/games';
+import { gamesRouter, startStaleGameSweeper } from './routes/games';
 import { handsRouter } from './routes/hands';
 import { playersRouter } from './routes/players';
 
@@ -42,4 +42,5 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 
 app.listen(PORT, () => {
   console.log(`API dernier in ascolto sulla porta ${PORT}`);
+  startStaleGameSweeper();
 });

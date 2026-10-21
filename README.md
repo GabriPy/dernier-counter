@@ -68,7 +68,7 @@ docker compose up -d
 Su un server pulito questo comando costruisce già le immagini. Dopo una modifica al
 codice serve `docker compose up -d --build`.
 
-L'app risponde su **http://localhost:8080**.
+L'app risponde su **http://localhost:8020**.
 
 ```bash
 docker compose ps            # stato dei servizi
@@ -78,11 +78,11 @@ docker compose down          # ferma tutto (i dati restano nel volume)
 
 ### Porte
 
-| Servizio | Esposizione                  | Note                                    |
-|----------|------------------------------|-----------------------------------------|
-| frontend | `127.0.0.1:8080`             | unica porta pubblicata, solo loopback   |
-| backend  | interna (`backend:3000`)     | raggiungibile solo da Nginx             |
-| db       | interna (`db:5432`)          | raggiungibile solo dal backend          |
+| Servizio | Esposizione                  | Note                                          |
+|----------|------------------------------|-----------------------------------------------|
+| frontend | `127.0.0.1:8020`             | unica porta pubblicata, solo loopback         |
+| backend  | interna (`backend:3000`)     | raggiungibile solo da Nginx                   |
+| db       | interna (`db:5432`)          | raggiungibile solo dal backend                |
 
 Il frontend chiama le API con path relativi (`/api/...`), quindi per il browser esiste
 una sola origine: niente CORS e backend non esposto.
@@ -111,11 +111,12 @@ L'unica porta pubblicata è la loopback, quindi il tunnel può puntarci direttam
 ```yaml
 ingress:
   - hostname: dernier.ghibiri.it
-    service: http://localhost:8080
+    service: http://localhost:8020
   - service: http_status:404
 ```
 
-Nginx ascolta sulla 8080 (non sulla 80) sia dentro sia fuori dal container.
+L'host espone la sola porta `8020` (loopback), mappata sulla `8080` di Nginx dentro il
+container; la `80` non viene usata da nessuno dei due lati.
 
 ## Struttura
 
@@ -158,6 +159,7 @@ Nginx ascolta sulla 8080 (non sulla 80) sia dentro sia fuori dal container.
 | GET    | `/api/games/:id`                | Dettaglio: giocatori, mani, classifica           |
 | POST   | `/api/games`                    | Crea partita con `{ player_ids: [...] }`         |
 | PATCH  | `/api/games/:id/finish`         | Chiude la partita e calcola i totali             |
+| DELETE | `/api/games/:id`                | Elimina una partita senza mani                   |
 | POST   | `/api/games/:id/hands`          | Registra una mano con `{ scores: [...] }`        |
 
 ## Regole applicate dal backend
@@ -170,6 +172,11 @@ Le regole stanno nel backend, non solo nella UI.
 - La partita si chiude solo con almeno una mano giocata.
 - Vince chi ha pagato **meno punti** in totale; a parità, chi ha vinto più mani, poi
   l'ID più basso.
+- Una partita in corso **senza mani** si può eliminare (`DELETE`); con almeno una mano
+  va invece chiusa.
+- Le partite in corso **ferme da oltre 30 minuti** (nessuna mano registrata) vengono
+  chiuse d'ufficio come finite: uno sweeper le controlla ogni minuto. La soglia si
+  regola con la variabile d'ambiente `STALE_GAME_MINUTES` (default `30`).
 - `DELETE /api/players/:id` disattiva, non cancella: i riferimenti storici restano validi.
 
 Tutto ciò che tocca più tabelle (creazione mano, chiusura partita, creazione partita)
@@ -179,7 +186,7 @@ gira in una transazione con `SELECT ... FOR UPDATE` sulla riga della partita.
 
 ```
 players (id, name, created_at, is_active)
-games   (id, started_at, ended_at, status, winner_id, total_points, total_hands)
+games   (id, started_at, ended_at, status, winner_id, total_points, total_hands, last_activity_at)
           │
           ├── game_players (id, game_id, player_id, seat_order)
           └── hands (id, game_id, hand_number, winner_id)

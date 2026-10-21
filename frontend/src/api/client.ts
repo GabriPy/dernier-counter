@@ -61,6 +61,9 @@ export const api = {
 
     finish: (id: number): Promise<Game> =>
       request<Game>(`/games/${id}/finish`, { method: 'PATCH' }),
+
+    remove: (id: number): Promise<void> =>
+      request<void>(`/games/${id}`, { method: 'DELETE' }),
   },
 
   hands: {
